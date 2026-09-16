@@ -49,13 +49,67 @@ jobs:
           sudo apt-get install -y ffmpeg
 
       - name: Install Chopify dependencies
-        run: python -m pip install -r chopify/requirements.txt
+        run: |
+          python -m pip install -r chopify/requirements.txt
+          python -m pip install "yt-dlp[default,curl-cffi]"
 
-      - name: Download and transcribe once
+      - name: Download video with free fallbacks
         working-directory: chopify
         env:
           YOUTUBE_URL: ${{ inputs.youtube_url }}
-        run: python download_and_transcribe.py "$YOUTUBE_URL"
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p work
+          rm -f work/source.*
+
+          try_download() {
+            local client="$1"
+            echo "Trying YouTube client: $client"
+            rm -f work/source.*
+            if [ "$client" = "default" ]; then
+              python -m yt_dlp \
+                --impersonate chrome \
+                -f "bestvideo*[height<=1080]+bestaudio/best[height<=1080]/18" \
+                --merge-output-format mp4 --no-playlist \
+                -o 'work/source.%(ext)s' "$YOUTUBE_URL"
+            else
+              python -m yt_dlp \
+                --impersonate chrome \
+                --extractor-args "youtube:player_client=${client};player_skip=webpage" \
+                -f "18/best[ext=mp4][height<=720]/best[height<=720]" \
+                --merge-output-format mp4 --no-playlist \
+                -o 'work/source.%(ext)s' "$YOUTUBE_URL"
+            fi
+          }
+
+          ok=0
+          for client in default android_vr web_embedded tv web_safari; do
+            if try_download "$client"; then
+              ok=1
+              break
+            fi
+          done
+
+          if [ "$ok" -ne 1 ]; then
+            echo "All anonymous YouTube download fallbacks were blocked."
+            exit 42
+          fi
+
+          ls -lh work/source.*
+
+      - name: Transcribe once
+        working-directory: chopify
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from download_and_transcribe import transcribe
+          work = Path('work')
+          videos = [p for p in sorted(work.glob('source.*')) if p.suffix.lower() in ('.mp4','.mkv','.webm','.mov','.m4v')]
+          if not videos:
+              raise SystemExit('No downloaded source video found')
+          transcribe(videos[0].resolve(), work, 'small', 'cpu', 'int8')
+          PY
 
       - name: Pick TikTok moments
         working-directory: chopify
