@@ -37,14 +37,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        shell: pwsh
+        shell: powershell
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r chopify/requirements.txt
           python -m pip install "yt-dlp[default,curl-cffi]"
 
       - name: Install ffmpeg locally
-        shell: pwsh
+        shell: powershell
         run: |
           $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
           $dir = Join-Path $env:RUNNER_TEMP "ffmpeg"
@@ -56,7 +56,7 @@ jobs:
           & (Join-Path $bin "ffmpeg.exe") -version | Select-Object -First 1
 
       - name: Download video from YouTube
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         env:
           YOUTUBE_URL: ${{ inputs.youtube_url }}
@@ -80,38 +80,38 @@ jobs:
           Get-ChildItem work/source.*
 
       - name: Transcribe once
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         run: |
           $video = (Get-ChildItem work/source.* | Select-Object -First 1).FullName
           python -c "import sys; from pathlib import Path; import download_and_transcribe as d; w=Path('work'); d.transcribe(Path(sys.argv[1]), w, 'small', 'cpu', 'int8')" "$video"
 
       - name: Pick TikTok moments
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         run: python score_clips.py work --min-len 55 --max-len 70 --max-clips 5
 
       - name: Render TikTok clips
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         run: |
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/out/tiktok" | Out-Null
           python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$env:GITHUB_WORKSPACE/out/tiktok"
 
       - name: Pick YouTube Shorts moments
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         run: python score_clips.py work --min-len 20 --max-len 40 --max-clips 5
 
       - name: Render YouTube Shorts
-        shell: pwsh
+        shell: powershell
         working-directory: chopify
         run: |
           New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/out/youtube" | Out-Null
           python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$env:GITHUB_WORKSPACE/out/youtube"
 
       - name: Prepare release files
-        shell: pwsh
+        shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
           $i = 1
