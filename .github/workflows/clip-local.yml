@@ -1,0 +1,138 @@
+name: Clip Autopilot Local
+run-name: Clip Local ${{ inputs.job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: YouTube URL
+        required: true
+        type: string
+      job_id:
+        description: Clip Autopilot job id
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  clip:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout worker
+        uses: actions/checkout@v4
+
+      - name: Checkout Chopify
+        uses: actions/checkout@v4
+        with:
+          repository: mehbul/chopify
+          path: chopify
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r chopify/requirements.txt
+          python -m pip install "yt-dlp[default,curl-cffi]"
+
+      - name: Install ffmpeg locally
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip
+          if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $bin = Get-ChildItem -Path $dir -Directory | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName "bin" }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $bin "ffmpeg.exe") -version | Select-Object -First 1
+
+      - name: Download video from YouTube
+        shell: pwsh
+        working-directory: chopify
+        env:
+          YOUTUBE_URL: ${{ inputs.youtube_url }}
+        run: |
+          New-Item -ItemType Directory -Force -Path work | Out-Null
+          Remove-Item -Force -ErrorAction SilentlyContinue work/source.*
+
+          function Try-Download([string[]]$Extra) {
+            Remove-Item -Force -ErrorAction SilentlyContinue work/source.*
+            $args = @('-m','yt_dlp','--impersonate','chrome','-f','bestvideo*[height<=1080]+bestaudio/best[height<=1080]/18','--merge-output-format','mp4','--no-playlist','-o','work/source.%(ext)s') + $Extra + @($env:YOUTUBE_URL)
+            & python @args
+            return ($LASTEXITCODE -eq 0 -and (Get-ChildItem work/source.* -ErrorAction SilentlyContinue).Count -gt 0)
+          }
+
+          $ok = Try-Download @()
+          if (-not $ok) { $ok = Try-Download @('--cookies-from-browser','chrome') }
+          if (-not $ok) { $ok = Try-Download @('--cookies-from-browser','edge') }
+          if (-not $ok) { $ok = Try-Download @('--cookies-from-browser','firefox') }
+          if (-not $ok) { throw 'YouTube download failed on the local runner.' }
+
+          Get-ChildItem work/source.*
+
+      - name: Transcribe once
+        shell: pwsh
+        working-directory: chopify
+        run: |
+          $video = (Get-ChildItem work/source.* | Select-Object -First 1).FullName
+          python -c "import sys; from pathlib import Path; import download_and_transcribe as d; w=Path('work'); d.transcribe(Path(sys.argv[1]), w, 'small', 'cpu', 'int8')" "$video"
+
+      - name: Pick TikTok moments
+        shell: pwsh
+        working-directory: chopify
+        run: python score_clips.py work --min-len 55 --max-len 70 --max-clips 5
+
+      - name: Render TikTok clips
+        shell: pwsh
+        working-directory: chopify
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/out/tiktok" | Out-Null
+          python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$env:GITHUB_WORKSPACE/out/tiktok"
+
+      - name: Pick YouTube Shorts moments
+        shell: pwsh
+        working-directory: chopify
+        run: python score_clips.py work --min-len 20 --max-len 40 --max-clips 5
+
+      - name: Render YouTube Shorts
+        shell: pwsh
+        working-directory: chopify
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE/out/youtube" | Out-Null
+          python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$env:GITHUB_WORKSPACE/out/youtube"
+
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $i = 1
+          Get-ChildItem out/tiktok/*.mp4 -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName "release/tiktok_$i.mp4"
+            $i++
+          }
+          $i = 1
+          Get-ChildItem out/youtube/*.mp4 -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item $_.FullName "release/youtube_$i.mp4"
+            $i++
+          }
+          if (-not (Get-ChildItem release/*.mp4 -ErrorAction SilentlyContinue)) { throw 'No clips were rendered.' }
+
+      - name: Publish clips as release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: clip-${{ inputs.job_id }}
+          name: Clip job ${{ inputs.job_id }}
+          body: Generated automatically with Chopify on the local runner.
+          files: release/*.mp4
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
