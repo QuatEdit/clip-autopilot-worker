@@ -1,0 +1,110 @@
+name: Clip Autopilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      youtube_url:
+        description: YouTube URL
+        required: true
+        type: string
+      job_id:
+        description: Clip Autopilot job id
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  clip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout worker
+        uses: actions/checkout@v4
+
+      - name: Checkout Chopify
+        uses: actions/checkout@v4
+        with:
+          repository: mehbul/chopify
+          path: chopify
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: chopify/requirements.txt
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Chopify dependencies
+        run: python -m pip install -r chopify/requirements.txt
+
+      - name: Download and transcribe once
+        working-directory: chopify
+        env:
+          YOUTUBE_URL: ${{ inputs.youtube_url }}
+        run: python download_and_transcribe.py "$YOUTUBE_URL"
+
+      - name: Pick TikTok moments
+        working-directory: chopify
+        run: python score_clips.py work --min-len 55 --max-len 70 --max-clips 5
+
+      - name: Render TikTok clips
+        working-directory: chopify
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out/tiktok"
+          python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$GITHUB_WORKSPACE/out/tiktok"
+
+      - name: Pick YouTube Shorts moments
+        working-directory: chopify
+        run: python score_clips.py work --min-len 20 --max-len 40 --max-clips 5
+
+      - name: Render YouTube Shorts
+        working-directory: chopify
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out/youtube"
+          python render_clips.py work --aspect 9:16 --style hormozi --tighten --loudnorm --out "$GITHUB_WORKSPACE/out/youtube"
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          set -e
+          mkdir -p release
+          i=1
+          shopt -s nullglob
+          for f in out/tiktok/*.mp4; do
+            cp "$f" "release/tiktok_${i}.mp4"
+            i=$((i+1))
+          done
+          i=1
+          for f in out/youtube/*.mp4; do
+            cp "$f" "release/youtube_${i}.mp4"
+            i=$((i+1))
+          done
+          ls -lh release
+          test -n "$(find release -maxdepth 1 -name '*.mp4' -print -quit)"
+
+      - name: Publish clips as release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_ID: ${{ inputs.job_id }}
+        run: |
+          TAG="job-${JOB_ID}"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+          git push origin ":refs/tags/$TAG" >/dev/null 2>&1 || true
+          gh release create "$TAG" release/*.mp4 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Clip job ${JOB_ID}" \
+            --notes "Generated automatically with Chopify. TikTok files start with tiktok_, YouTube Shorts with youtube_."
