@@ -31,10 +31,6 @@ jobs:
           repository: mehbul/chopify
           path: chopify
 
-      - name: Allow PowerShell setup scripts
-        shell: powershell
-        run: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope LocalMachine -Force
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
