@@ -52,8 +52,9 @@ jobs:
           if (Test-Path $dir) { Remove-Item -Recurse -Force $dir }
           Expand-Archive -Path $zip -DestinationPath $dir -Force
           $bin = Get-ChildItem -Path $dir -Directory | Select-Object -First 1 | ForEach-Object { Join-Path $_.FullName "bin" }
+          if (-not $bin -or -not (Test-Path (Join-Path $bin "ffmpeg.exe"))) { throw 'ffmpeg.exe was not found after extraction.' }
           $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & (Join-Path $bin "ffmpeg.exe") -version | Select-Object -First 1
+          Write-Host "ffmpeg ready at $bin"
 
       - name: Download video from YouTube
         shell: powershell
